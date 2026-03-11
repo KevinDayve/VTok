@@ -23,7 +23,7 @@ class VTokeniser(nn.Module):
             self.feature_extractor = ClipFeatureExtractor(freeze=config.freeze_backbone)
             feature_dim = 1024
         elif config.backbone == "vgg19":
-            self.feature_extractor = VGGFeatureExtractor(freeze=config.freeze_backbone)
+            self.feature_extractor = VGGFeatureExtractor(layer_index=config.vgg_layer_index, freeze=config.freeze_backbone)
             feature_dim = 512
         else:
             raise ValueError(f"Unknown backbone: {config.backbone}")
@@ -50,16 +50,19 @@ class VTokeniser(nn.Module):
         B, T, C, H, W = video.shape
         key_frame_index = key_frame_index if key_frame_index is not None else self.config.key_frame_index
 
-        all_features = self.feature_extractor(video.reshape(B*T, C, H, W))
-        
-        key_features = all_features[:key_frame_index]
-        # generate spatial tokens from key.
+        all_features = self.feature_extractor(video.reshape(B * T, C, H, W))
+        feat_c, feat_h, feat_w = all_features.shape[1:]
+        all_features = all_features.reshape(B, T, feat_c, feat_h, feat_w)
+
+        key_features = all_features[:, key_frame_index]
         spatial_tokens = self.spatialEncoder(key_features)
 
         motions_tokens = []
-        for t in range(0, T, self.config.temporal_stride):
-            if t == key_frame_index:
-                continue
+        temporal_indices = list(range(0, T, self.config.temporal_stride))
+        if key_frame_index in temporal_indices:
+            temporal_indices.remove(key_frame_index)
+
+        for t in temporal_indices:
             frame_features = all_features[:, t]
             motion_token = self.motionEncoder(frame_features, key_features)
             motions_tokens.append(motion_token)
@@ -71,3 +74,6 @@ class VTokeniser(nn.Module):
             tokens = spatial_tokens
         
         return tokens
+
+class VTokTokeniser(VTokeniser):
+    pass

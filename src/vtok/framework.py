@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as Functional
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
+
 from transformers import LlavaNextForConditionalGeneration, AutoTokenizer
 from diffusers import HunyuanVideoTransformer3DModel, AutoencoderKL, DDIMScheduler
 from .config import VTokConfig
@@ -24,20 +25,11 @@ class UnifiedFramework(nn.Module):
         self.visualProj = VisualProjection(token_dimension=cfg.token_dim, model_dim=4096)
 
         # load the mllm,
-        self.mllm = LlavaNextForConditionalGeneration.from_pretrained(model_id, dtype=torch.bfloat16)
+        self.mllm = LlavaNextForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch.bfloat16)
         self.mllm.config.output_hidden_states = True
         self.mllm_tokeniser = AutoTokenizer.from_pretrained(model_id)
         if self.mllm_tokeniser.pad_token is None:
             self.mllm_tokeniser.pad_token = self.mllm_tokeniser.eos_token
-
-        # The paper mentions that LLava is compatible with Hunyuan, but in case it isn't we might
-        # Need to project MLLM's hidden states into decoder's space.
-        self.dit_crossattn_dim = None
-        self.mllm_to_dit_proj = None
-
-        dit_dim = self.decoder_transformer.config.cross_attention_dim
-        if dit_dim != 4096:
-            self.mllm_to_dit_proj = nn.Linear(4096, dit_dim).to(torch.bfloat16)
 
         # load the video-decoder
         self.decoder_transformer = HunyuanVideoTransformer3DModel.from_pretrained(
@@ -56,16 +48,27 @@ class UnifiedFramework(nn.Module):
         for p in self.decoder_vae.parameters():
             p.requires_grad = False
 
-    def _get_text_embeddings(self, text: str, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+        # The paper mentions that LLava is compatible with Hunyuan, but in case it isn't we might
+        # need to project MLLM's hidden states into decoder's space.
+        self.mllm_to_dit_proj = None
+        dit_dim = self.decoder_transformer.config.cross_attention_dim
+        if dit_dim != 4096:
+            self.mllm_to_dit_proj = nn.Linear(4096, dit_dim).to(torch.bfloat16)
+
+    def _get_text_embeddings(self, text: str | List[str], device: torch.device | str) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Tokenise the text and return the embeddings along with token IDs.
         """
-        tokens = self.mllm_tokeniser(text, return_tensort='pt', padding=True).to(device)
-        ids = tokens.input_ids
-        embeddings = self.mllm.language_model.get_input_embeddings()(tokens)
+        if isinstance(text, list):
+            tokens = self.mllm_tokeniser(text, return_tensors="pt", padding=True, truncation=True)
+        else:
+            tokens = self.mllm_tokeniser(text, return_tensors="pt", padding=True)
+        tokens = {k: v.to(device) for k, v in tokens.items()}
+        ids = tokens["input_ids"]
+        embeddings = self.mllm.language_model.get_input_embeddings()(ids)
         return embeddings, ids
     
-    def forward_understanding(self, video: torch.Tensor, text_prompt: str, target_text: str) -> torch.Tensor:
+    def forward_understanding(self, video: torch.Tensor, text_prompt: str | List[str], target_text: str | List[str]) -> torch.Tensor:
         """
         The understanding part of the video, utilising the MLLM language backbone.
         A typical sequence looks like:
@@ -93,7 +96,7 @@ class UnifiedFramework(nn.Module):
         # huggingface will compute cross-entropy internally.
         return outputs.loss
     
-    def forward_generation(self, video: torch.Tensor, text_prompt: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_generation(self, video: torch.Tensor, text_prompt: str | List[str]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         The generation part of the framework, which utilises the decoder.
         Here, the sequence looks like:
@@ -146,7 +149,7 @@ class UnifiedFramework(nn.Module):
         loss_decoder = Functional.mse_loss(noise_pred, noise)
         return loss_visual_lm, loss_decoder
     
-    def forward(self, video: torch.Tensor, caption: str) -> Dict[str, torch.Tensor]:
+    def forward(self, video: torch.Tensor, caption: str | List[str]) -> Dict[str, torch.Tensor]:
         """
         Args:
             video: The video tensor
@@ -154,9 +157,14 @@ class UnifiedFramework(nn.Module):
         Returns:
             A dictionary containing losses.
         """
+        if isinstance(caption, list):
+            prompt: str | List[str] = ["Describe this video."] * len(caption)
+        else:
+            prompt = "Describe this video."
+
         loss_understanding = self.forward_understanding(
             video=video,
-            text_prompt="Describe this video.",
+            text_prompt=prompt,
             target_text=caption,
         )
         loss_visual, loss_decoder = self.forward_generation(
@@ -171,3 +179,6 @@ class UnifiedFramework(nn.Module):
             "loss_visual": loss_visual,
             "loss_decoder": loss_decoder
         }
+
+class VTokFramework(UnifiedFramework):
+    pass

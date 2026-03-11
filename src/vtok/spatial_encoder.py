@@ -10,12 +10,14 @@ class SpatialEncoder(nn.Module):
         self.adaptive_pool = nn.AdaptiveAvgPool2d((grid_size, grid_size))
         self.feat_dim = feat_dim
         self.token_dim = token_dim
+        self.proj = None
+        if self.feat_dim != self.token_dim:
+            self.proj = nn.Linear(self.feat_dim, self.token_dim)
     
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         pooled = self.adaptive_pool(features)
         Batch, dim, g_h, g_w = pooled.shape
         spatial_pooled = pooled.reshape(Batch, g_h*g_w, dim)
-        if self.feat_dim != self.token_dim:
-            proj = nn.Linear(self.feat_dim, self.token_dim)
-            spatial_pooled = proj(spatial_pooled)
+        if self.proj is not None:
+            spatial_pooled = self.proj(spatial_pooled)
         return spatial_pooled

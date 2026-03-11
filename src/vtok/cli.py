@@ -52,15 +52,15 @@ def main() -> None:
     init_rng(seed=args.seed)
 
     train(
-        vtok_config=cfg,
-        data_root=args.data_root,
+        config=cfg,
+        root=args.data_root,
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
         ema_decay=args.ema_decay,
         max_norm=args.max_norm,
         checkpoint_dir=args.checkpoint_dir,
-        log_interval=args.log_interval,
+        logging_interval=args.log_interval,
         checkpoint_interval=args.checkpoint_interval,
     )
 

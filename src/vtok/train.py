@@ -1,6 +1,5 @@
 import logging
 from pathlib import Path
-from copy import deepcopy
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -9,6 +8,7 @@ from .framework import UnifiedFramework
 from .data.dataset import VideoCaptionDataset
 
 logger = logging.getLogger(__name__)
+
 class EMA:
     """
     Exponential moving average of model parameters.
@@ -17,13 +17,15 @@ class EMA:
         self.decay = decay
         self.shadow = {}
         for name, parameter in model.named_parameters():
-            if parameter.requires_grad and name in self.shadow:
-                self.shadow[name].mul_(self.decay).add_(parameter.data, alpha=1 - self.decay)
+            if parameter.requires_grad:
+                self.shadow[name] = parameter.data.clone()
+
     @torch.no_grad()
     def update(self, model: torch.nn.Module) -> None:
         for name, parameter in model.named_parameters():
             if parameter.requires_grad and name in self.shadow:
                 self.shadow[name].mul_(self.decay).add_(parameter.data, alpha=1 - self.decay)
+
     def apply(self, model: torch.nn.Module) -> None:
         """
         Swap model parameters with EMA parameters.
@@ -33,6 +35,7 @@ class EMA:
             if name in self.shadow:
                 self.backup[name] = parameter.data.clone()
                 parameter.data.copy_(self.shadow[name])
+
     def restore(self, model: torch.nn.Module) -> None:
         """
         Restore original model parameters after inference.
@@ -58,15 +61,16 @@ def train(
     model = UnifiedFramework(cfg=config).to(device=device)
 
     trainable_parameters = [p for p in model.parameters() if p.requires_grad]
-    optimiser = optim.AdamW(trainable_parameters, lr=lr)
+    optimizer = optim.AdamW(trainable_parameters, lr=lr)
     
     # count of frozen and trainable parameters.
     trainable_parameters_count: int = sum(p.numel() for p in trainable_parameters)
-    frozen_parameters_count: int = sum(p.numel() for p in model.parameters if not p.requires_grad)
-    logger.info(f"Trainable: {trainable_parameters_count}, Frozen parameters: {frozen_parameters_count}")
+    frozen_parameters_count: int = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    logger.info(f'Trainable: {trainable_parameters_count}, Frozen parameters: {frozen_parameters_count}')
 
     ema = EMA(model=model, decay=ema_decay)
     dataset = VideoCaptionDataset(root=root)
+
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -86,7 +90,7 @@ def train(
         logger.info(f"Resuming from {latest_ckpt}")
         ckpt = torch.load(latest_ckpt, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state_dict"])
-        optimiser.load_state_dict(ckpt['optimiser_state_dict'])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
         ema.shadow = ckpt["ema_shadow"]
         start_epoch = ckpt["epoch"] + 1
         global_step = ckpt["global_step"]
@@ -110,13 +114,13 @@ def train(
             loss = outputs['loss']
             if not loss.isfinite():
                 logger.warning(f"Step {global_step}: non-finite loss. Skipping gradient flow")
-                optimiser.zero_grad()
+                optimizer.zero_grad()
                 continue
 
-            optimiser.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(trainable_parameters, max_norm=max_norm)
-            optimiser.step()
+            optimizer.step()
 
             ema.update(model=model)
             epoch_loss += loss.item()
@@ -124,11 +128,11 @@ def train(
 
             if global_step % logging_interval == 0:
                 logger.info(
-                    f"Epoch: {epoch} | Step: {global_step}"
-                    f"Loss: {loss.item():.4f}"
-                    f"Loss understanding: {outputs["loss_understanding"].item():.4f}"
-                    f"Loss decoder: {outputs["loss_decoder"].item():.4f}"
-                    f"Loss visual: {outputs["loss_visual"].item():4f}"
+                    f"Epoch: {epoch} | Step: {global_step} "
+                    f"Loss: {loss.item():.4f} "
+                    f"Loss understanding: {outputs['loss_understanding'].item():.4f} "
+                    f"Loss decoder: {outputs['loss_decoder'].item():.4f} "
+                    f"Loss visual: {outputs['loss_visual'].item():.4f}"
                 )
             global_step += 1
         
@@ -138,7 +142,7 @@ def train(
         if (epoch + 1) % checkpoint_interval == 0:
             ckpt_data = {
                 "model_state_dict": model.state_dict(),
-                "optimiser_state_dict": optimiser.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
                 "ema_shadow": ema.shadow,
                 "epoch": epoch,
                 "global_step": global_step,

@@ -25,7 +25,8 @@ class VideoCaptionDataset(Dataset):
         self.temporal_stride = temporal_stride
 
         self.samples: List[Path] = sorted([
-            d for d in self.root.iterdir() if d.is_dir() and (d / "frames").exists and (d / "caption.txt").exists()
+            d for d in self.root.iterdir()
+            if d.is_dir() and (d / "frames").is_dir() and (d / "caption.txt").is_file()
         ])
     def __len__(self) -> int:
         return len(self.samples)
