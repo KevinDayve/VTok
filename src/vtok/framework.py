@@ -35,10 +35,6 @@ class UnifiedFramework(nn.Module):
         self.dit_crossattn_dim = None
         self.mllm_to_dit_proj = None
 
-        dit_dim = self.decoder_transformer.config.cross_attention_dim
-        if dit_dim != 4096:
-            self.mllm_to_dit_proj = nn.Linear(4096, dit_dim).to(torch.bfloat16)
-
         # load the video-decoder
         self.decoder_transformer = HunyuanVideoTransformer3DModel.from_pretrained(
             video_decoder_id, subfolder="transformer", torch_dtype=torch.bfloat16,
@@ -49,6 +45,9 @@ class UnifiedFramework(nn.Module):
         self.scheduler = DDIMScheduler.from_pretrained(
             video_decoder_id, subfolder="scheduler",
         )
+        dit_dim = self.decoder_transformer.config.cross_attention_dim
+        if dit_dim != 4096:
+            self.mllm_to_dit_proj = nn.Linear(4096, dit_dim).to(torch.bfloat16)
         self.decoder_transformer.eval()
         self.decoder_vae.eval()
         for p in self.decoder_transformer.parameters():
@@ -60,7 +59,7 @@ class UnifiedFramework(nn.Module):
         """
         Tokenise the text and return the embeddings along with token IDs.
         """
-        tokens = self.mllm_tokeniser(text, return_tensort='pt', padding=True).to(device)
+        tokens = self.mllm_tokeniser(text, return_tensors='pt', padding=True).to(device)
         ids = tokens.input_ids
         embeddings = self.mllm.language_model.get_input_embeddings()(tokens)
         return embeddings, ids
